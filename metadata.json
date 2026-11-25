@@ -1,0 +1,6 @@
+{
+  "name": "CaptionStudio 1080p",
+  "description": "Native Android Kotlin + Jetpack Compose 1080p zero-copy OpenGL ES 3.0 caption video studio with live WebGL GPU preview and downloadable Gradle project.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
