@@ -2,6 +2,7 @@ import type {
   ActiveCaptionState,
   AudioStrategyInfo,
   CfrFrameDescriptor,
+  ExportFps,
   FrameSchedule,
   GroupedCaptionPage,
   ScheduledFrame,
@@ -15,6 +16,62 @@ const TIMESTAMP_REGEX =
 
 /** Pause threshold (> 0.9s) that forces a new caption page so unrelated sentences never merge */
 export const NATURAL_PAUSE_BREAK_MS = 900;
+
+/** Known transcription service watermark patterns cleaned by 1-click Watermark Cleaner */
+const WATERMARK_PATTERNS: RegExp[] = [
+  /transcribed\s+by\s+turboscribe\.?ai/i,
+  /turboscribe\.?ai/i,
+  /go\s+unlimited\s+at\s+turboscribe/i,
+  /transcribed\s+by\s+otter\.?ai/i,
+  /transcribed\s+by\s+whisper/i,
+  /generated\s+by\s+whisper/i,
+  /subtitles\s+by\s+amara\.org/i,
+  /www\.opensubtitles\.org/i,
+];
+
+export function isWatermarkText(text: string): boolean {
+  const normalized = text.trim();
+  if (!normalized) return true;
+  return WATERMARK_PATTERNS.some((re) => re.test(normalized));
+}
+
+/**
+ * 1-Click Watermark Cleaner: strips transcription header/footer cues (e.g. TurboScribe, Otter)
+ * and also removes inline watermark parentheticals from mixed cues.
+ */
+export function cleanWatermarkCues(cues: SrtCue[]): {
+  cleaned: SrtCue[];
+  removedCount: number;
+} {
+  let removedCount = 0;
+  const kept: SrtCue[] = [];
+
+  for (const cue of cues) {
+    if (isWatermarkText(cue.text)) {
+      removedCount++;
+      continue;
+    }
+    // Also strip inline "(Transcribed by TurboScribe.ai...)" parentheticals if embedded in a cue
+    const stripped = cue.text
+      .replace(/\(\s*Transcribed\s+by\s+TurboScribe[^)]*\)/gi, '')
+      .replace(/\[\s*Transcribed\s+by\s+TurboScribe[^\]]*\]/gi, '')
+      .trim();
+
+    if (!stripped) {
+      removedCount++;
+      continue;
+    }
+    if (stripped !== cue.text) {
+      removedCount++;
+    }
+    kept.push({ ...cue, text: stripped });
+  }
+
+  return {
+    cleaned: kept.map((c, idx) => ({ ...c, index: idx + 1 })),
+    removedCount,
+  };
+}
 
 export function parseTimecodeToMs(
   hours: string,
@@ -202,12 +259,16 @@ function flattenCuesToTimedWords(rawCues: SrtCue[]): TimedWord[] {
   return result;
 }
 
+/**
+ * Groups consecutive word cues into multi-word caption pages up to `wordsOnScreen` (1..100 words),
+ * breaking early when there is a natural pause > 0.9s between words.
+ */
 export function groupSrtCuesIntoPages(
   rawCues: SrtCue[],
   wordsOnScreen: number,
   maxPauseMs: number = NATURAL_PAUSE_BREAK_MS
 ): GroupedCaptionPage[] {
-  const maxWords = Math.max(1, Math.min(30, Math.round(wordsOnScreen) || 6));
+  const maxWords = Math.max(1, Math.min(100, Math.round(wordsOnScreen) || 6));
   const allWords = flattenCuesToTimedWords(rawCues);
   if (allWords.length === 0) return [];
 
@@ -253,20 +314,23 @@ export function groupSrtCuesIntoPages(
 
 /**
  * Strict Word Matching for both Live Preview and True CFR MP4 Export:
- * - Sampled at sampleT (which in CFR export is t + 0.5 / fps).
- * - Matches exact word where `word.start <= sampleT && sampleT < word.end`.
- * - Falls back to the most recently spoken word inside that group (`last word where word.start <= sampleT`).
- * - Guarantees zero skipped small or large words.
+ * - Applies global `wordSyncOffsetMs` (-300ms .. +300ms) so users can micro-tune highlight timing.
+ * - Matches exact word where `word.start <= effectiveT && effectiveT < word.end`.
+ * - Falls back to the most recently spoken word inside that group (`last word where word.start <= effectiveT`).
+ * - Guarantees zero skipped small or large words and zero flicker.
  */
 export function getActiveCaptionFromPages(
   pages: GroupedCaptionPage[],
   sampleT: number,
   wordKaraoke: boolean,
-  uppercase: boolean
+  uppercase: boolean,
+  wordSyncOffsetMs = 0
 ): ActiveCaptionState {
+  const effectiveT = sampleT + wordSyncOffsetMs;
+
   const page =
-    pages.find((p) => sampleT >= p.startMs && sampleT < p.endMs) ??
-    pages.find((p) => sampleT === p.endMs) ??
+    pages.find((p) => effectiveT >= p.startMs && effectiveT < p.endMs) ??
+    pages.find((p) => effectiveT === p.endMs) ??
     null;
 
   if (!page) {
@@ -290,14 +354,12 @@ export function getActiveCaptionFromPages(
 
   let activeWordIndex = -1;
   if (wordKaraoke && page.words.length > 0) {
-    // 1. Strict half-open interval match: word.start <= sampleT && sampleT < word.end
-    const exactIdx = page.words.findIndex((w) => sampleT >= w.start && sampleT < w.end);
+    const exactIdx = page.words.findIndex((w) => effectiveT >= w.start && effectiveT < w.end);
     if (exactIdx !== -1) {
       activeWordIndex = exactIdx;
     } else {
-      // 2. Fallback to the last word with word.start <= sampleT inside that group
       for (let i = page.words.length - 1; i >= 0; i--) {
-        if (sampleT >= page.words[i].start) {
+        if (effectiveT >= page.words[i].start) {
           activeWordIndex = i;
           break;
         }
@@ -334,10 +396,11 @@ export function getActiveCaptionAtTime(
   timeMs: number,
   wordKaraoke: boolean,
   uppercase: boolean,
-  wordsOnScreen = 6
+  wordsOnScreen = 6,
+  wordSyncOffsetMs = 0
 ): ActiveCaptionState {
   const pages = groupSrtCuesIntoPages(cues, wordsOnScreen);
-  return getActiveCaptionFromPages(pages, timeMs, wordKaraoke, uppercase);
+  return getActiveCaptionFromPages(pages, timeMs, wordKaraoke, uppercase, wordSyncOffsetMs);
 }
 
 export function computeTimelineDurationMs(cues: SrtCue[], audioDurationMs?: number): number {
@@ -347,15 +410,15 @@ export function computeTimelineDurationMs(cues: SrtCue[], audioDurationMs?: numb
 }
 
 /**
- * Generates True Constant Frame Rate (CFR) frame descriptors for rock-solid hardware H.264 sync:
+ * Generates True Constant Frame Rate (CFR) frame descriptors (15, 24, or 30 fps):
  * - timestampUs = Math.round(frameIndex * (1_000_000 / fps))
  * - durationUs = Math.round(1_000_000 / fps)
- * - sampleTimeMs = (frameIndex + 0.5) * (1000 / fps)  [t + 0.5 / fps]
+ * - sampleTimeMs = (frameIndex + 0.5) * (1000 / fps)
  * - keyFrame every 2 seconds (frameIndex % (fps * 2) === 0)
  */
 export function buildCfrFrameTimestamps(
   durationMs: number,
-  fps: 24 | 30
+  fps: ExportFps
 ): CfrFrameDescriptor[] {
   const safeDurationMs = Math.max(1_000, Math.round(durationMs));
   const frameDurationUsExact = 1_000_000 / fps;
@@ -377,15 +440,13 @@ export function buildCfrFrameTimestamps(
   return list;
 }
 
-/**
- * Builds the True CFR export frame schedule summary for UI & Subtitles inspector.
- */
 export function buildFrameScheduleFromPages(
   pages: GroupedCaptionPage[],
   durationMs: number,
   _slowZoom: boolean,
   wordKaraoke: boolean,
-  fps: 24 | 30
+  fps: ExportFps,
+  wordSyncOffsetMs = 0
 ): FrameSchedule {
   const cfrFrames = buildCfrFrameTimestamps(durationMs, fps);
   const frames: ScheduledFrame[] = cfrFrames.map((f, idx) => ({
@@ -403,7 +464,7 @@ export function buildFrameScheduleFromPages(
   const uniqueStates = new Set<string>();
   for (const f of cfrFrames) {
     uniqueStates.add(
-      getActiveCaptionFromPages(pages, f.sampleTimeMs, wordKaraoke, false).stateKey
+      getActiveCaptionFromPages(pages, f.sampleTimeMs, wordKaraoke, false, wordSyncOffsetMs).stateKey
     );
   }
 
@@ -422,7 +483,7 @@ export function buildFrameSchedule(
   durationMs: number,
   slowZoom: boolean,
   wordKaraoke: boolean,
-  fps: 24 | 30,
+  fps: ExportFps,
   wordsOnScreen = 6
 ): FrameSchedule {
   const pages = groupSrtCuesIntoPages(cues, wordsOnScreen);

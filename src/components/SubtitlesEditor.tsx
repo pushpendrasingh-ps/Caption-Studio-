@@ -1,15 +1,17 @@
-import React, { useMemo, useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import {
   CornerDownRight,
   Download,
   Minus,
   Plus,
   Search,
+  Sparkles,
   Trash2,
   Upload,
   X,
 } from 'lucide-react';
 import {
+  cleanWatermarkCues,
   formatMsToDisplayClock,
   formatMsToSrtTimecode,
   parseSrt,
@@ -48,6 +50,7 @@ export function SubtitlesEditor({
   const [viewMode, setViewMode] = useState<SubtitlesViewMode>('raw');
   const [searchQuery, setSearchQuery] = useState('');
   const [importError, setImportError] = useState<string | null>(null);
+  const [cleanNotice, setCleanNotice] = useState<string | null>(null);
 
   const normalizedQuery = searchQuery.trim().toLowerCase();
 
@@ -70,9 +73,20 @@ export function SubtitlesEditor({
         return;
       }
       setImportError(null);
+      setCleanNotice(null);
       onUpdateCues(parsed, file.name);
     } catch {
       setImportError('Unable to read the selected SRT file.');
+    }
+  };
+
+  const handleCleanWatermarks = () => {
+    const { cleaned, removedCount } = cleanWatermarkCues(cues);
+    if (removedCount > 0) {
+      onUpdateCues(cleaned);
+      setCleanNotice(`Cleaned ${removedCount} transcription watermark ${removedCount === 1 ? 'cue' : 'cues'}.`);
+    } else {
+      setCleanNotice('No transcription watermarks found in current subtitles.');
     }
   };
 
@@ -153,6 +167,15 @@ export function SubtitlesEditor({
           <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
+              onClick={handleCleanWatermarks}
+              className="inline-flex h-10 items-center gap-1.5 rounded-lg border border-[#F97316]/45 bg-[#F97316]/12 px-3 text-xs font-semibold text-[#F4F5F7] transition-colors hover:bg-[#F97316]/25 whitespace-nowrap"
+            >
+              <Sparkles className="h-3.5 w-3.5 text-[#F97316]" aria-hidden="true" />
+              <span>Clean Watermarks</span>
+            </button>
+
+            <button
+              type="button"
               onClick={() => fileInputRef.current?.click()}
               className="inline-flex h-10 items-center gap-1.5 rounded-lg border border-white/[0.1] bg-[#1C1F26] px-3 text-xs font-semibold text-[#F4F5F7] transition-colors hover:bg-[#262B35] whitespace-nowrap"
             >
@@ -191,7 +214,7 @@ export function SubtitlesEditor({
           </div>
         </div>
 
-        {/* Search Bar + Raw/Grouped Switcher + Words on Screen Quick Stepper */}
+        {/* Search Bar + Raw/Grouped Switcher + Words on Screen Quick Stepper (1..100) */}
         <div className="flex flex-wrap items-center gap-2.5">
           <div className="relative min-w-[200px] flex-1">
             <Search
@@ -264,19 +287,32 @@ export function SubtitlesEditor({
             >
               <Minus className="h-3 w-3" aria-hidden="true" />
             </button>
-            <span className="w-6 text-center font-mono text-xs font-semibold text-[#F4F5F7] tabular-nums">
+            <span className="w-7 text-center font-mono text-xs font-semibold text-[#F4F5F7] tabular-nums">
               {wordsOnScreen}
             </span>
             <button
               type="button"
               aria-label="Increase words on screen in subtitles"
-              onClick={() => onChangeWordsOnScreen(Math.min(25, wordsOnScreen + 1))}
+              onClick={() => onChangeWordsOnScreen(Math.min(100, wordsOnScreen + 1))}
               className="flex h-7 w-7 items-center justify-center rounded bg-[#1C1F26] text-[#F4F5F7] hover:bg-[#262B35]"
             >
               <Plus className="h-3 w-3" aria-hidden="true" />
             </button>
           </div>
         </div>
+
+        {cleanNotice && (
+          <div className="flex items-center justify-between rounded-lg border border-[#22C55E]/35 bg-[#22C55E]/10 px-4 py-2.5 text-xs text-[#86EFAC]">
+            <span>{cleanNotice}</span>
+            <button
+              type="button"
+              onClick={() => setCleanNotice(null)}
+              className="text-[#9BA1AE] hover:text-[#F4F5F7]"
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
 
         {importError && (
           <div className="rounded-lg border border-[#EF4444]/40 bg-[#EF4444]/10 px-4 py-3 text-xs text-[#FCA5A5]">
@@ -450,7 +486,7 @@ export function SubtitlesEditor({
         )}
       </section>
 
-      {/* Right Column: Smart Event-Frame Schedule Preview */}
+      {/* Right Column: True CFR Frame Schedule Preview */}
       <aside className="flex flex-col gap-4 lg:col-span-4">
         <div className="rounded-xl border border-white/[0.08] bg-[#14161B] p-5">
           <h2 className="text-sm font-semibold text-[#F4F5F7]">
@@ -459,7 +495,7 @@ export function SubtitlesEditor({
           <p className="mt-1.5 text-xs leading-relaxed text-[#9BA1AE]">
             {slowZoom
               ? `Constant ${frameSchedule.fps} fps with Slow Zoom — monotonic VideoFrame timestamps + 2s keyframes and mid-frame word sampling (t + 0.5/fps).`
-              : `Constant ${frameSchedule.fps} fps with pre-cached 1080p backdrop — latencyMode: quality prevents dropped or shifted words on every device.`}
+              : `Constant ${frameSchedule.fps} fps with pre-cached backdrop — latencyMode: quality prevents dropped or shifted words on every device.`}
           </p>
 
           <dl className="mt-4 grid grid-cols-2 gap-3 border-y border-white/[0.08] py-3.5 text-xs">

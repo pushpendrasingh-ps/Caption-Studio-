@@ -6,13 +6,14 @@ import {
   getActiveCaptionFromPages,
 } from '../core/srtEngine';
 import {
-  ASPECT_RATIOS,
+  getOutputDimensions,
   type AspectRatioId,
   type AudioAsset,
   type CaptionStyle,
   type FontOption,
   type FrameSchedule,
   type GroupedCaptionPage,
+  type ResolutionId,
 } from '../core/types';
 import { CompositeFrameRenderer, type FrameHitRects } from '../gl/compositeFrameRenderer';
 import type { NormalizedRect } from '../gl/overlayRenderers';
@@ -21,6 +22,7 @@ type DragTarget = 'caption' | 'vocalWave' | 'logo';
 
 interface GpuPreviewStageProps {
   aspectId: AspectRatioId;
+  resolutionId: ResolutionId;
   imageElement: HTMLImageElement | null;
   imageLoadError: string | null;
   logoImage: HTMLImageElement | null;
@@ -52,6 +54,7 @@ function hitTest(rect: NormalizedRect | null, nx: number, ny: number, pad = 0.02
 
 export function GpuPreviewStage({
   aspectId,
+  resolutionId,
   imageElement,
   imageLoadError,
   logoImage,
@@ -70,7 +73,7 @@ export function GpuPreviewStage({
   onUpdateVocalWavePosition,
   onUpdateLogoPosition,
 }: GpuPreviewStageProps) {
-  const aspect = ASPECT_RATIOS[aspectId];
+  const outputSpec = getOutputDimensions(aspectId, resolutionId);
   const stageContainerRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const rendererRef = useRef<CompositeFrameRenderer | null>(null);
@@ -80,11 +83,11 @@ export function GpuPreviewStage({
   const [boxDims, setBoxDims] = useState<{ w: number; h: number }>({ w: 640, h: 360 });
   const [renderCount, setRenderCount] = useState(0);
 
-  // Preview resolution at 1/2 of 1080p for crisp real-time WYSIWYG rendering
-  const previewWidth = Math.round(aspect.width / 2);
-  const previewHeight = Math.round(aspect.height / 2);
+  // Preview resolution capped at 720p-equivalent or output resolution for crisp real-time rendering
+  const previewScale = Math.min(1, 960 / Math.max(outputSpec.width, outputSpec.height));
+  const previewWidth = Math.max(320, Math.round(outputSpec.width * previewScale));
+  const previewHeight = Math.max(320, Math.round(outputSpec.height * previewScale));
 
-  // Fit preview frame cleanly inside available locked upper-stage space without ever overflowing
   useEffect(() => {
     const el = stageContainerRef.current;
     if (!el) return;
@@ -94,7 +97,7 @@ export function GpuPreviewStage({
       const pad = 16;
       const availW = Math.max(120, rect.width - pad);
       const availH = Math.max(120, rect.height - pad);
-      const targetRatio = aspect.width / aspect.height;
+      const targetRatio = outputSpec.width / outputSpec.height;
 
       let w = availW;
       let h = w / targetRatio;
@@ -109,9 +112,8 @@ export function GpuPreviewStage({
     const ro = new ResizeObserver(recalc);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [aspect.width, aspect.height]);
+  }, [outputSpec.width, outputSpec.height]);
 
-  // Mount unified CompositeFrameRenderer ONCE
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -123,12 +125,10 @@ export function GpuPreviewStage({
     };
   }, []);
 
-  // Update background image once when imageElement changes
   useEffect(() => {
     rendererRef.current?.setBackgroundImage(imageElement);
   }, [imageElement]);
 
-  // On-demand WYSIWYG frame render (zero idle RAF spin when paused)
   useEffect(() => {
     const canvas = canvasRef.current;
     const renderer = rendererRef.current;
@@ -143,7 +143,8 @@ export function GpuPreviewStage({
       pages,
       currentTimeMs,
       style.wordKaraoke,
-      style.uppercase
+      style.uppercase,
+      style.wordSyncOffsetMs
     );
 
     hitRectsRef.current = renderer.render({
@@ -154,7 +155,6 @@ export function GpuPreviewStage({
       font: activeFont,
       audioEnvelope,
       logoImage,
-      // Drop Vocal Wave bars smoothly to flat 2-3px baseline when paused
       forceWaveSilent: !isPlaying,
     });
     setRenderCount(renderer.captionRenders);
@@ -208,7 +208,6 @@ export function GpuPreviewStage({
     const nx = (e.clientX - rect.left) / Math.max(1, rect.width);
     const ny = (e.clientY - rect.top) / Math.max(1, rect.height);
 
-    // Priority hit-test: Logo -> Vocal Wave -> Caption
     let chosen: DragTarget = 'caption';
     if (style.logoEnabled && logoImage && hitTest(hitRectsRef.current.logo, nx, ny, 0.025)) {
       chosen = 'logo';
@@ -280,7 +279,10 @@ export function GpuPreviewStage({
             ref={canvasRef}
             data-testid="gpu-preview-canvas"
             data-aspect={aspectId}
+            data-resolution={resolutionId}
             data-words-on-screen={style.wordsOnScreen}
+            data-text-align={style.textAlign}
+            data-balanced-lines={String(style.balancedLines)}
             data-pos-x={Math.round(style.positionX * 100)}
             data-pos-y={Math.round(style.positionY * 100)}
             data-animation={style.animation}
@@ -356,7 +358,8 @@ export function GpuPreviewStage({
                   1,
                   ((page.endMs - page.startMs) / Math.max(1, durationMs)) * 100
                 );
-                const isActive = currentTimeMs >= page.startMs && currentTimeMs <= page.endMs;
+                const effectiveT = currentTimeMs + (style.wordSyncOffsetMs || 0);
+                const isActive = effectiveT >= page.startMs && effectiveT <= page.endMs;
                 return (
                   <span
                     key={page.id}
@@ -388,14 +391,22 @@ export function GpuPreviewStage({
           </div>
         </div>
 
-        {/* Quiet 1-line metadata strip (hidden on tiny screens to maximize canvas) */}
+        {/* Quiet 1-line metadata strip */}
         <div className="mx-auto mt-1 hidden max-w-[1100px] items-center justify-between text-[11px] text-[#9BA1AE] sm:flex">
           <div className="flex items-center gap-2">
             <span>
-              {aspect.width}×{aspect.height}
+              {outputSpec.width}×{outputSpec.height} ({resolutionId})
             </span>
             <span aria-hidden="true">·</span>
             <span>{style.wordsOnScreen} words/screen</span>
+            {style.wordSyncOffsetMs !== 0 && (
+              <>
+                <span aria-hidden="true">·</span>
+                <span>
+                  Sync {style.wordSyncOffsetMs > 0 ? `+${style.wordSyncOffsetMs}` : style.wordSyncOffsetMs}ms
+                </span>
+              </>
+            )}
             <span aria-hidden="true">·</span>
             <span>{audio.strategy.label}</span>
           </div>

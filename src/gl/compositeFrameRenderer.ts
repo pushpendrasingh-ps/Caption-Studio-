@@ -3,6 +3,7 @@ import { computeKenBurnsTransform } from '../core/srtEngine';
 import type { ActiveCaptionState, CaptionStyle, FontOption } from '../core/types';
 import {
   buildCaptionStyleHash,
+  computeCaptionAnimationCacheKey,
   renderCaptionToTransparentCanvas,
   type RenderedCaptionBitmap,
 } from './captionTextureRenderer';
@@ -32,23 +33,22 @@ export interface CompositeRenderParams {
 }
 
 /**
- * Unified 1080p Frame Compositor shared by BOTH GpuPreviewStage (live preview)
+ * Unified Multi-Resolution Frame Compositor shared by BOTH GpuPreviewStage (live preview)
  * and browserVideoExporter (True CFR MP4 export) for 100% WYSIWYG output.
  *
- * Fast Caching Architecture:
- * - When Slow Zoom is OFF, pre-bakes the 1080p static background image (Fill/Fit) +
- *   Background Dim + Dark Vignette ONCE into an offscreen canvas/ImageBitmap so every
- *   CFR frame only blits the cached backdrop + draws active caption, vocal wave, logo,
- *   and progress bar.
- * - When caption animation is 'none', caches the transparent caption bitmap across
- *   identical stateKeys to skip redundant text measurement & Canvas 2D stroke/fill.
+ * Fast Caching Architecture (Zero Redundant Caption Redraws):
+ * - Pre-bakes the background image (Fill/Fit) + Background Dim + Dark Vignette ONCE into an
+ *   offscreen ImageBitmap/canvas when Slow Zoom is OFF.
+ * - Caches the rendered caption text onto its OWN separate offscreen canvas (`captionCacheCanvas`)
+ *   keyed by `(captionState.stateKey, styleHash, animationPhaseBucket)` so static or settled
+ *   caption text is NEVER redrawn on every frame while the Vocal Wave bars animate on top!
  */
 export class CompositeFrameRenderer {
   private readonly targetCanvas: HTMLCanvasElement;
   private readonly ctx: CanvasRenderingContext2D;
   private readonly backdropCanvas: HTMLCanvasElement;
   private readonly vignetteCanvas: HTMLCanvasElement;
-  private readonly captionCanvas: HTMLCanvasElement;
+  private readonly captionCacheCanvas: HTMLCanvasElement;
 
   private bgImage: HTMLImageElement | null = null;
   private bgVersion = 0;
@@ -70,7 +70,7 @@ export class CompositeFrameRenderer {
 
     this.backdropCanvas = document.createElement('canvas');
     this.vignetteCanvas = document.createElement('canvas');
-    this.captionCanvas = document.createElement('canvas');
+    this.captionCacheCanvas = document.createElement('canvas');
   }
 
   public setBackgroundImage(image: HTMLImageElement | null): void {
@@ -84,7 +84,7 @@ export class CompositeFrameRenderer {
   }
 
   /**
-   * Optional async pre-bake to GPU-backed ImageBitmap right before True CFR MP4 export
+   * Async pre-bake to GPU-backed ImageBitmap right before True CFR MP4 export
    * when Slow Zoom is OFF for maximum blit throughput.
    */
   public async prepareStaticBackdropBitmap(
@@ -240,14 +240,13 @@ export class CompositeFrameRenderer {
       forceWaveSilent
     );
 
-    // 3. Animated Caption Layer (with static cache bypass when animation === 'none')
+    // 3. Cached Animated Caption Layer (keyed by stateKey + styleHash + quantized animation phase bucket)
     let captionRect: NormalizedRect | null = null;
     if (captionState.cue && captionState.words.length > 0) {
       const styleHash = buildCaptionStyleHash(style, font);
-      const isAnimated = style.animation !== 'none';
-      const cacheKey = isAnimated
-        ? `${captionState.stateKey}#${styleHash}@${Math.round(timeMs)}`
-        : `${captionState.stateKey}#${styleHash}`;
+      const effectiveSampleMs = timeMs + (style.wordSyncOffsetMs || 0);
+      const animBucket = computeCaptionAnimationCacheKey(captionState, style, effectiveSampleMs);
+      const cacheKey = `${captionState.stateKey}#${styleHash}#${width}x${height}@${animBucket}`;
 
       if (cacheKey !== this.lastCaptionKey) {
         this.lastRenderedCaption = renderCaptionToTransparentCanvas(
@@ -256,8 +255,8 @@ export class CompositeFrameRenderer {
           font,
           width,
           height,
-          timeMs,
-          this.captionCanvas
+          effectiveSampleMs,
+          this.captionCacheCanvas
         );
         this.lastCaptionKey = cacheKey;
         if (this.lastRenderedCaption) {
@@ -267,7 +266,6 @@ export class CompositeFrameRenderer {
 
       if (this.lastRenderedCaption) {
         const cap = this.lastRenderedCaption;
-        // Clamp core box inside frame cleanly, then offset by animation headroom margin
         const boxLeft = Math.max(
           0,
           Math.min(width - cap.boxWidth, style.positionX * width - cap.boxWidth * 0.5)
@@ -293,7 +291,7 @@ export class CompositeFrameRenderer {
     // 4. Channel Logo Watermark Layer
     const logoRect = renderChannelLogoOverlay(ctx, width, height, style, logoImage);
 
-    // 5. Video Progress Bar Layer (always crisp on top edge/bottom edge)
+    // 5. Video Progress Bar Layer
     renderProgressBarOverlay(ctx, width, height, style, timeMs, durationMs);
 
     return {

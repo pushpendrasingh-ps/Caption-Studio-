@@ -13,14 +13,17 @@ import {
 import {
   deleteFontFromDb,
   deleteLogoFromDb,
+  deleteStudioImageFromDb,
   loadPersistedSettings,
   loadSavedFontsFromDb,
   loadSavedLogoFromDb,
+  loadSavedStudioImagesFromDb,
   loadSavedTemplates,
   registerFontFace,
   saveFontToDb,
   saveLogoToDb,
   savePersistedSettings,
+  saveStudioImageToDb,
   saveTemplatesList,
   type StoredCustomFont,
 } from './core/fontStorage';
@@ -36,6 +39,7 @@ import {
   BUILT_IN_FONTS,
   DEFAULT_CAPTION_STYLE,
   DEFAULT_DEMO_SRT,
+  DEFAULT_TYPOGRAPHY_SPACING,
   SAMPLE_BACKDROPS,
   type AspectRatioId,
   type AudioAsset,
@@ -44,9 +48,20 @@ import {
   type FontOption,
   type ImageAsset,
   type LogoAsset,
+  type ResolutionId,
   type SavedTemplate,
   type SrtCue,
 } from './core/types';
+
+const VALID_BITRATES: ExportBitrateMbps[] = [1.2, 2.0, 3.5, 6.0];
+
+function sanitizeBitrate(raw: unknown): ExportBitrateMbps {
+  const num = Number(raw);
+  if (VALID_BITRATES.includes(num as ExportBitrateMbps)) {
+    return num as ExportBitrateMbps;
+  }
+  return 2.0;
+}
 
 export default function App() {
   // Restore persisted settings & saved templates synchronously from localStorage
@@ -54,20 +69,28 @@ export default function App() {
 
   const [activeTab, setActiveTab] = useState<WorkspaceTab>('studio');
   const [aspectId, setAspectId] = useState<AspectRatioId>(persisted?.aspectId ?? '16:9');
-  const [bitrateMbps, setBitrateMbps] = useState<ExportBitrateMbps>(
-    persisted?.bitrateMbps ?? 3.5
+  const [resolutionId, setResolutionId] = useState<ResolutionId>(
+    persisted?.resolutionId ?? '720p'
+  );
+  const [bitrateMbps, setBitrateMbps] = useState<ExportBitrateMbps>(() =>
+    sanitizeBitrate(persisted?.bitrateMbps)
   );
   const [exportOpen, setExportOpen] = useState(false);
 
-  // 1. Background Image Asset
-  const [imageAsset, setImageAsset] = useState<ImageAsset>({
-    id: SAMPLE_BACKDROPS[0].id,
-    name: SAMPLE_BACKDROPS[0].name.split(' (')[0],
-    url: SAMPLE_BACKDROPS[0].url,
-    naturalWidth: 1920,
-    naturalHeight: 1080,
-    isCustom: false,
+  // 1. Background Image Asset + Permanent Studio Image Library (IndexedDB)
+  const [imageAsset, setImageAsset] = useState<ImageAsset>(() => {
+    const initialSample =
+      SAMPLE_BACKDROPS.find((b) => b.id === persisted?.selectedImageId) ?? SAMPLE_BACKDROPS[0];
+    return {
+      id: initialSample.id,
+      name: initialSample.name.split(' (')[0],
+      url: initialSample.url,
+      naturalWidth: 1920,
+      naturalHeight: 1080,
+      isCustom: false,
+    };
   });
+  const [savedStudioImages, setSavedStudioImages] = useState<ImageAsset[]>([]);
   const [imageElement, setImageElement] = useState<HTMLImageElement | null>(null);
   const [imageLoadError, setImageLoadError] = useState<string | null>(null);
 
@@ -108,13 +131,14 @@ export default function App() {
   const [currentTimeMs, setCurrentTimeMs] = useState<number>(1_320);
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
 
-  // Load permanently saved custom fonts & channel logo from IndexedDB on startup
+  // Load permanently saved custom fonts, channel logo, and Studio Image Library from IndexedDB on startup
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const [savedFonts, savedLogo] = await Promise.all([
+      const [savedFonts, savedLogo, savedImages] = await Promise.all([
         loadSavedFontsFromDb(),
         loadSavedLogoFromDb(),
+        loadSavedStudioImagesFromDb(),
       ]);
       if (cancelled) return;
 
@@ -145,17 +169,47 @@ export default function App() {
         const url = URL.createObjectURL(blob);
         setLogoAsset({ name: savedLogo.fileName, url });
       }
+
+      if (!cancelled && savedImages.length > 0) {
+        const restoredAssets: ImageAsset[] = savedImages.map((item) => {
+          const blob = new Blob([item.buffer], { type: item.mimeType || 'image/jpeg' });
+          const url = URL.createObjectURL(blob);
+          return {
+            id: item.id,
+            name: item.name,
+            url,
+            naturalWidth: 1920,
+            naturalHeight: 1080,
+            isCustom: true,
+          };
+        });
+        setSavedStudioImages(restoredAssets);
+
+        // If user previously had a custom studio image active, restore it automatically
+        if (persisted?.selectedImageId) {
+          const match = restoredAssets.find((img) => img.id === persisted.selectedImageId);
+          if (match) {
+            setImageAsset(match);
+          }
+        }
+      }
     })();
 
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [persisted?.selectedImageId]);
 
-  // Persist user style, aspect ratio, and bitrate to localStorage
+  // Persist user style, aspect ratio, resolution, bitrate, and active image ID to localStorage
   useEffect(() => {
-    savePersistedSettings({ style, aspectId, bitrateMbps });
-  }, [style, aspectId, bitrateMbps]);
+    savePersistedSettings({
+      style,
+      aspectId,
+      resolutionId,
+      bitrateMbps,
+      selectedImageId: imageAsset.id,
+    });
+  }, [style, aspectId, resolutionId, bitrateMbps, imageAsset.id]);
 
   // Persist Saved Custom Templates to localStorage
   useEffect(() => {
@@ -164,7 +218,7 @@ export default function App() {
 
   const wordByWordDetected = useMemo(() => isWordByWordSrt(cues), [cues]);
 
-  // Live Word-by-Word Smart Grouping
+  // Live Word-by-Word Smart Grouping (1 to 100 words per screen)
   const groupedPages = useMemo(
     () => groupSrtCuesIntoPages(cues, style.wordsOnScreen),
     [cues, style.wordsOnScreen]
@@ -296,6 +350,17 @@ export default function App() {
     setStyle((prev) => ({ ...prev, ...patch }));
   }, []);
 
+  const handleResetSpacing = useCallback(() => {
+    setStyle((prev) => ({
+      ...prev,
+      ...DEFAULT_TYPOGRAPHY_SPACING,
+    }));
+  }, []);
+
+  const handleResetAllStyle = useCallback(() => {
+    setStyle({ ...DEFAULT_CAPTION_STYLE });
+  }, []);
+
   const handleUpdatePosition = useCallback((x: number, y: number) => {
     setStyle((prev) => ({
       ...prev,
@@ -365,21 +430,63 @@ export default function App() {
     setAspectId(sample.recommendedAspect);
   }, []);
 
-  const handleUploadImage = useCallback((file: File) => {
-    const objectUrl = URL.createObjectURL(file);
-    setImageAsset((prev) => {
-      if (prev.isCustom && prev.url.startsWith('blob:')) {
-        URL.revokeObjectURL(prev.url);
+  const handleSelectStudioImage = useCallback((img: ImageAsset) => {
+    setImageAsset(img);
+  }, []);
+
+  const handleDeleteStudioImage = useCallback(async (id: string) => {
+    try {
+      await deleteStudioImageFromDb(id);
+    } catch {
+      // Continue removing from memory state even if IndexedDB fails
+    }
+    setSavedStudioImages((prev) => {
+      const target = prev.find((item) => item.id === id);
+      if (target?.url.startsWith('blob:')) {
+        URL.revokeObjectURL(target.url);
       }
+      return prev.filter((item) => item.id !== id);
+    });
+    setImageAsset((prev) => {
+      if (prev.id !== id) return prev;
       return {
-        id: `custom-${Date.now()}`,
-        name: file.name,
-        url: objectUrl,
+        id: SAMPLE_BACKDROPS[0].id,
+        name: SAMPLE_BACKDROPS[0].name.split(' (')[0],
+        url: SAMPLE_BACKDROPS[0].url,
         naturalWidth: 1920,
         naturalHeight: 1080,
-        isCustom: true,
+        isCustom: false,
       };
     });
+  }, []);
+
+  const handleUploadImage = useCallback(async (file: File) => {
+    const id = `studio_img_${Date.now()}`;
+    const objectUrl = URL.createObjectURL(file);
+    const nextAsset: ImageAsset = {
+      id,
+      name: file.name,
+      url: objectUrl,
+      naturalWidth: 1920,
+      naturalHeight: 1080,
+      isCustom: true,
+    };
+
+    setImageAsset(nextAsset);
+    setSavedStudioImages((prev) => [nextAsset, ...prev]);
+
+    try {
+      const buffer = await file.arrayBuffer();
+      await saveStudioImageToDb({
+        id,
+        name: file.name,
+        mimeType: file.type || 'image/jpeg',
+        buffer,
+        addedAt: Date.now(),
+      });
+    } catch {
+      // Image still works for the current session even if IndexedDB quota is exceeded
+    }
   }, []);
 
   const handleUploadAudio = useCallback((file: File) => {
@@ -544,7 +651,7 @@ export default function App() {
   const handleApplyTemplate = useCallback((tpl: SavedTemplate) => {
     setStyle((prev) => ({ ...prev, ...tpl.style }));
     setAspectId(tpl.aspectId);
-    setBitrateMbps(tpl.bitrateMbps);
+    setBitrateMbps(sanitizeBitrate(tpl.bitrateMbps));
   }, []);
 
   const handleDeleteTemplate = useCallback((id: string) => {
@@ -569,6 +676,8 @@ export default function App() {
         onSelectTab={setActiveTab}
         aspectId={aspectId}
         onChangeAspect={setAspectId}
+        resolutionId={resolutionId}
+        onChangeResolution={setResolutionId}
         onOpenExport={() => setExportOpen(true)}
       />
 
@@ -580,6 +689,7 @@ export default function App() {
         <main className="flex min-h-0 flex-1 flex-col overflow-hidden">
           <GpuPreviewStage
             aspectId={aspectId}
+            resolutionId={resolutionId}
             imageElement={imageElement}
             imageLoadError={imageLoadError}
             logoImage={logoImage}
@@ -603,6 +713,7 @@ export default function App() {
             aspectId={aspectId}
             onChangeAspect={setAspectId}
             imageAsset={imageAsset}
+            savedStudioImages={savedStudioImages}
             audioAsset={audioAsset}
             logoAsset={logoAsset}
             srtFileName={srtFileName}
@@ -615,6 +726,8 @@ export default function App() {
             frameSchedule={frameSchedule}
             onUploadImage={handleUploadImage}
             onSelectSampleBackdrop={handleSelectSampleBackdrop}
+            onSelectStudioImage={handleSelectStudioImage}
+            onDeleteStudioImage={handleDeleteStudioImage}
             onUploadAudio={handleUploadAudio}
             onUploadSrt={handleUploadSrt}
             onUploadCustomFont={handleUploadCustomFont}
@@ -626,6 +739,8 @@ export default function App() {
             onDeleteTemplate={handleDeleteTemplate}
             onOpenSubtitlesTab={() => setActiveTab('subtitles')}
             onUpdateStyle={handleUpdateStyle}
+            onResetSpacing={handleResetSpacing}
+            onResetAllStyle={handleResetAllStyle}
             onNudgePosition={handleNudgePosition}
             onCenterPosition={handleCenterPosition}
             onNudgeVocalWave={handleNudgeVocalWave}
@@ -671,6 +786,8 @@ export default function App() {
         open={exportOpen}
         onClose={() => setExportOpen(false)}
         aspectId={aspectId}
+        resolutionId={resolutionId}
+        onChangeResolution={setResolutionId}
         imageElement={imageElement}
         logoImage={logoImage}
         audio={audioAsset}

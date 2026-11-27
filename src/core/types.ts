@@ -1,5 +1,23 @@
 export type AspectRatioId = '16:9' | '9:16' | '1:1';
 
+export type ResolutionId = '1080p' | '720p' | '540p' | '480p' | '360p';
+
+export interface ResolutionOption {
+  id: ResolutionId;
+  label: string;
+  shortEdge: number;
+  longEdge16x9: number;
+  hint: string;
+}
+
+export const RESOLUTION_OPTIONS: ResolutionOption[] = [
+  { id: '1080p', label: '1080p Full HD', shortEdge: 1080, longEdge16x9: 1920, hint: 'Master 1080p' },
+  { id: '720p', label: '720p Fast HD', shortEdge: 720, longEdge16x9: 1280, hint: 'Recommended Fast HD' },
+  { id: '540p', label: '540p qHD', shortEdge: 540, longEdge16x9: 960, hint: 'Balanced Social' },
+  { id: '480p', label: '480p SD', shortEdge: 480, longEdge16x9: 854, hint: 'Compact Mobile' },
+  { id: '360p', label: '360p Draft', shortEdge: 360, longEdge16x9: 640, hint: 'Ultra-Fast Preview' },
+];
+
 export interface AspectRatioSpec {
   id: AspectRatioId;
   label: string;
@@ -32,8 +50,25 @@ export const ASPECT_RATIOS: Record<AspectRatioId, AspectRatioSpec> = {
   },
 };
 
+export function getOutputDimensions(
+  aspectId: AspectRatioId,
+  resolutionId: ResolutionId = '720p'
+): AspectRatioSpec {
+  const res = RESOLUTION_OPTIONS.find((r) => r.id === resolutionId) ?? RESOLUTION_OPTIONS[1];
+  const base = ASPECT_RATIOS[aspectId];
+  if (aspectId === '16:9') {
+    return { ...base, width: res.longEdge16x9, height: res.shortEdge };
+  }
+  if (aspectId === '9:16') {
+    return { ...base, width: res.shortEdge, height: res.longEdge16x9 };
+  }
+  return { ...base, width: res.shortEdge, height: res.shortEdge };
+}
+
 export type BackgroundFitMode = 'fill' | 'fit';
-export type ExportBitrateMbps = 3.5 | 6 | 10;
+export type ExportBitrateMbps = 1.2 | 2.0 | 3.5 | 6.0;
+export type ExportFps = 15 | 24 | 30;
+export type TextAlignMode = 'left' | 'center' | 'right' | 'justify';
 
 export type VocalWaveStyleId =
   | 'bottom-bars'
@@ -63,11 +98,21 @@ export type CaptionAnimationId =
   | 'sliding-pill'
   | 'pop-bounce'
   | 'slide-up'
+  | 'slide-left'
   | 'fade-in'
   | 'glow-pulse'
   | 'karaoke-sweep'
   | 'underline-slide'
-  | 'punch-shake';
+  | 'punch-shake'
+  | 'wave-jump'
+  | 'blur-in'
+  | 'zoom-out'
+  | 'flip-3d'
+  | 'glitch-flash'
+  | 'neon-flicker'
+  | 'box-wipe'
+  | 'elastic-drop'
+  | 'tilt-pop';
 
 export interface CaptionAnimationOption {
   id: CaptionAnimationId;
@@ -76,16 +121,26 @@ export interface CaptionAnimationOption {
 }
 
 export const CAPTION_ANIMATIONS: CaptionAnimationOption[] = [
-  { id: 'none', label: 'None', shortDesc: 'Clean instant' },
+  { id: 'none', label: 'None', shortDesc: 'Instant clean' },
   { id: 'word-scale', label: 'Word Scale', shortDesc: '1.15x spoken pop' },
   { id: 'sliding-pill', label: 'Sliding Pill', shortDesc: 'Gliding highlight box' },
   { id: 'pop-bounce', label: 'Pop Bounce', shortDesc: 'Spring group entry' },
   { id: 'slide-up', label: 'Slide Up', shortDesc: 'Smooth rise reveal' },
+  { id: 'slide-left', label: 'Slide Left', shortDesc: 'Horizontal glide in' },
   { id: 'fade-in', label: 'Fade In', shortDesc: 'Soft opacity entry' },
   { id: 'glow-pulse', label: 'Glow Pulse', shortDesc: 'Active word bloom' },
-  { id: 'karaoke-sweep', label: 'Karaoke Sweep', shortDesc: 'Progressive color fill' },
+  { id: 'karaoke-sweep', label: 'Karaoke Sweep', shortDesc: 'Progressive fill' },
   { id: 'underline-slide', label: 'Underline', shortDesc: 'Gliding accent bar' },
   { id: 'punch-shake', label: 'Punch Shake', shortDesc: 'Impact micro-shake' },
+  { id: 'wave-jump', label: 'Wave Jump', shortDesc: 'Active word hops up' },
+  { id: 'blur-in', label: 'Blur-In', shortDesc: 'Soft focus reveal' },
+  { id: 'zoom-out', label: 'Zoom-Out', shortDesc: 'Oversize settle in' },
+  { id: 'flip-3d', label: '3D Flip-In', shortDesc: 'Perspective card flip' },
+  { id: 'glitch-flash', label: 'Glitch Flash', shortDesc: 'RGB cyber snap' },
+  { id: 'neon-flicker', label: 'Neon Flicker', shortDesc: 'Electric tube ignition' },
+  { id: 'box-wipe', label: 'Box Wipe', shortDesc: 'Left-to-right curtain' },
+  { id: 'elastic-drop', label: 'Elastic Drop', shortDesc: 'Gravity drop bounce' },
+  { id: 'tilt-pop', label: 'Tilt Pop', shortDesc: 'Playful active word tilt' },
 ];
 
 export type ProgressBarPosition = 'top' | 'bottom';
@@ -134,7 +189,7 @@ export interface ActiveCaptionState {
   words: WordToken[];
   activeWordIndex: number;
   displayText: string;
-  /** Deterministic cache key used to skip redundant draws when animation is 'none' */
+  /** Deterministic cache key used to skip redundant draws */
   stateKey: string;
 }
 
@@ -163,10 +218,22 @@ export interface CaptionStyle {
   positionY: number;
   /** Base font size at 1080p short-edge reference (px) */
   fontSizePx: number;
-  /** Max caption wrap width as fraction of video width [0.35 .. 0.95] */
+  /** Max caption wrap width as fraction of video width [35 .. 95] */
   maxWidthPercent: number;
-  /** Max words grouped on screen per caption page (default 6) */
+  /** Max words grouped on screen per caption page (1..100, default 6) */
   wordsOnScreen: number;
+  /** Global micro-sync offset in milliseconds [-300 .. +300] */
+  wordSyncOffsetMs: number;
+  /** Horizontal text alignment within caption box */
+  textAlign: TextAlignMode;
+  /** Distribute words evenly across lines so single orphan words don't hang */
+  balancedLines: boolean;
+  /** Line height multiplier [0.9 .. 2.2] (default 1.28) */
+  lineSpacingMultiplier: number;
+  /** Extra word gap at 1080p reference [0 .. 32 px] */
+  wordSpacingPx: number;
+  /** Extra letter spacing at 1080p reference [-2 .. 16 px] */
+  letterSpacingPx: number;
   fontId: string;
   textColor: string;
   highlightColor: string;
@@ -179,7 +246,7 @@ export interface CaptionStyle {
   boxPadding: number;
   /** 0..12 px at 1080p reference */
   outlineThickness: number;
-  /** Caption animation type */
+  /** Caption animation type (20 options) */
   animation: CaptionAnimationId;
   /** Animation speed / intensity multiplier [0.4 .. 2.0] */
   animationIntensity: number;
@@ -192,8 +259,8 @@ export interface CaptionStyle {
   slowZoom: boolean;
   wordKaraoke: boolean;
   uppercase: boolean;
-  /** True CFR export frame rate (24 fps default, 30 fps option) */
-  fps: 24 | 30;
+  /** True CFR export frame rate (15 fps Podcast fast, 24 fps Cinema, 30 fps Smooth) */
+  fps: ExportFps;
 
   // --- Vocal Wave Visualizer ---
   vocalWaveEnabled: boolean;
@@ -233,12 +300,26 @@ export interface CaptionStyle {
   progressBarThickness: number;
 }
 
+export const DEFAULT_TYPOGRAPHY_SPACING = {
+  textAlign: 'center' as TextAlignMode,
+  balancedLines: true,
+  lineSpacingMultiplier: 1.28,
+  wordSpacingPx: 0,
+  letterSpacingPx: 0,
+};
+
 export const DEFAULT_CAPTION_STYLE: CaptionStyle = {
   positionX: 0.5,
   positionY: 0.72,
   fontSizePx: 58,
   maxWidthPercent: 80,
   wordsOnScreen: 6,
+  wordSyncOffsetMs: 0,
+  textAlign: 'center',
+  balancedLines: true,
+  lineSpacingMultiplier: 1.28,
+  wordSpacingPx: 0,
+  letterSpacingPx: 0,
   fontId: 'plus-jakarta',
   textColor: '#FFFFFF',
   highlightColor: '#FACC15',
@@ -365,6 +446,7 @@ export interface SavedTemplate {
   createdAt: number;
   style: CaptionStyle;
   aspectId: AspectRatioId;
+  resolutionId?: ResolutionId;
   bitrateMbps: ExportBitrateMbps;
 }
 
@@ -417,7 +499,7 @@ export interface ScheduledFrame {
 
 export interface FrameSchedule {
   mode: 'cfr' | 'smart-event' | 'continuous';
-  fps: 24 | 30;
+  fps: ExportFps;
   frames: ScheduledFrame[];
   equivalentContinuousFrames: number;
   uniqueTextureStates: number;

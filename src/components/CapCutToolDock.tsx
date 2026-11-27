@@ -1,5 +1,9 @@
 import React, { useRef, useState } from 'react';
 import {
+  AlignCenter,
+  AlignJustify,
+  AlignLeft,
+  AlignRight,
   AudioLines,
   BookmarkPlus,
   FileAudio,
@@ -10,6 +14,7 @@ import {
   Move,
   Palette,
   Plus,
+  RotateCcw,
   SlidersHorizontal,
   Sparkles,
   Trash2,
@@ -30,6 +35,7 @@ import {
   type ImageAsset,
   type LogoAsset,
   type SavedTemplate,
+  type TextAlignMode,
 } from '../core/types';
 
 export type DockToolId = 'media' | 'position' | 'font' | 'style' | 'animate' | 'wave' | 'brand';
@@ -38,6 +44,7 @@ interface CapCutToolDockProps {
   aspectId: AspectRatioId;
   onChangeAspect: (id: AspectRatioId) => void;
   imageAsset: ImageAsset;
+  savedStudioImages: ImageAsset[];
   audioAsset: AudioAsset;
   logoAsset: LogoAsset | null;
   srtFileName: string;
@@ -50,6 +57,8 @@ interface CapCutToolDockProps {
   frameSchedule: FrameSchedule;
   onUploadImage: (file: File) => void;
   onSelectSampleBackdrop: (backdropId: string) => void;
+  onSelectStudioImage: (img: ImageAsset) => void;
+  onDeleteStudioImage: (id: string) => void;
   onUploadAudio: (file: File) => void;
   onUploadSrt: (file: File) => void;
   onUploadCustomFont: (file: File) => void;
@@ -61,6 +70,8 @@ interface CapCutToolDockProps {
   onDeleteTemplate: (id: string) => void;
   onOpenSubtitlesTab: () => void;
   onUpdateStyle: (patch: Partial<CaptionStyle>) => void;
+  onResetSpacing: () => void;
+  onResetAllStyle: () => void;
   onNudgePosition: (dx: number, dy: number) => void;
   onCenterPosition: () => void;
   onNudgeVocalWave: (dx: number, dy: number) => void;
@@ -84,10 +95,22 @@ const DOCK_TABS: Array<{ id: DockToolId; label: string; icon: React.ComponentTyp
   { id: 'brand', label: 'Brand', icon: SlidersHorizontal },
 ];
 
+const ALIGN_OPTIONS: Array<{
+  id: TextAlignMode;
+  label: string;
+  icon: React.ComponentType<{ className?: string }>;
+}> = [
+  { id: 'left', label: 'Left Align', icon: AlignLeft },
+  { id: 'center', label: 'Center Align', icon: AlignCenter },
+  { id: 'right', label: 'Right Align', icon: AlignRight },
+  { id: 'justify', label: 'Justify', icon: AlignJustify },
+];
+
 export function CapCutToolDock({
   aspectId,
   onChangeAspect,
   imageAsset,
+  savedStudioImages,
   audioAsset,
   logoAsset,
   srtFileName,
@@ -100,6 +123,8 @@ export function CapCutToolDock({
   frameSchedule,
   onUploadImage,
   onSelectSampleBackdrop,
+  onSelectStudioImage,
+  onDeleteStudioImage,
   onUploadAudio,
   onUploadSrt,
   onUploadCustomFont,
@@ -111,6 +136,8 @@ export function CapCutToolDock({
   onDeleteTemplate,
   onOpenSubtitlesTab,
   onUpdateStyle,
+  onResetSpacing,
+  onResetAllStyle,
   onNudgePosition,
   onCenterPosition,
   onNudgeVocalWave,
@@ -131,7 +158,7 @@ export function CapCutToolDock({
   const builtInFonts = fonts.filter((f) => !f.isCustom);
 
   const setWordsOnScreenSafe = (next: number) => {
-    const clamped = Math.max(1, Math.min(25, Math.round(next) || 1));
+    const clamped = Math.max(1, Math.min(100, Math.round(next) || 1));
     onUpdateStyle({ wordsOnScreen: clamped });
   };
 
@@ -205,20 +232,20 @@ export function CapCutToolDock({
       <div
         role="tabpanel"
         aria-label={`${DOCK_TABS.find((t) => t.id === activeTool)?.label ?? 'Tool'} controls`}
-        className="h-[235px] overflow-y-auto px-3 py-3 sm:h-[245px] sm:px-5"
+        className="relative h-[235px] overflow-y-auto px-3 py-3 sm:h-[245px] sm:px-5"
       >
         <div className="mx-auto max-w-[1100px]">
-          {/* TAB 1: MEDIA (1. Image, 2. Audio, 3. SRT) */}
+          {/* TAB 1: MEDIA (1. Image, 2. Audio, 3. SRT + Permanent Studio Image Library in IndexedDB) */}
           {activeTool === 'media' && (
             <div className="flex flex-col gap-3">
               <div className="grid grid-cols-3 gap-2 sm:gap-3">
                 <button
                   type="button"
                   onClick={() => imageInputRef.current?.click()}
-                  className="flex min-h-[70px] flex-col items-center justify-center gap-1 rounded-xl border border-white/[0.1] bg-[#1B1E26] px-2 py-2.5 text-center transition-colors hover:border-white/25 hover:bg-[#232732]"
+                  className="flex min-h-[66px] flex-col items-center justify-center gap-1 rounded-xl border border-white/[0.1] bg-[#1B1E26] px-2 py-2 text-center transition-colors hover:border-white/25 hover:bg-[#232732]"
                 >
                   <ImageIcon className="h-4 w-4 text-[#F97316]" aria-hidden="true" />
-                  <span className="text-xs font-semibold text-[#F4F5F7]">1. Image</span>
+                  <span className="text-xs font-semibold text-[#F4F5F7]">1. Image (+ Save)</span>
                   <span className="max-w-full truncate text-[11px] text-[#9BA1AE]">
                     {imageAsset.name}
                   </span>
@@ -227,7 +254,7 @@ export function CapCutToolDock({
                 <button
                   type="button"
                   onClick={() => audioInputRef.current?.click()}
-                  className="flex min-h-[70px] flex-col items-center justify-center gap-1 rounded-xl border border-white/[0.1] bg-[#1B1E26] px-2 py-2.5 text-center transition-colors hover:border-white/25 hover:bg-[#232732]"
+                  className="flex min-h-[66px] flex-col items-center justify-center gap-1 rounded-xl border border-white/[0.1] bg-[#1B1E26] px-2 py-2 text-center transition-colors hover:border-white/25 hover:bg-[#232732]"
                 >
                   <FileAudio className="h-4 w-4 text-[#F97316]" aria-hidden="true" />
                   <span className="text-xs font-semibold text-[#F4F5F7]">2. Audio</span>
@@ -239,7 +266,7 @@ export function CapCutToolDock({
                 <button
                   type="button"
                   onClick={() => srtInputRef.current?.click()}
-                  className="flex min-h-[70px] flex-col items-center justify-center gap-1 rounded-xl border border-white/[0.1] bg-[#1B1E26] px-2 py-2.5 text-center transition-colors hover:border-white/25 hover:bg-[#232732]"
+                  className="flex min-h-[66px] flex-col items-center justify-center gap-1 rounded-xl border border-white/[0.1] bg-[#1B1E26] px-2 py-2 text-center transition-colors hover:border-white/25 hover:bg-[#232732]"
                 >
                   <FileText className="h-4 w-4 text-[#F97316]" aria-hidden="true" />
                   <span className="text-xs font-semibold text-[#F4F5F7]">3. SRT</span>
@@ -249,9 +276,75 @@ export function CapCutToolDock({
                 </button>
               </div>
 
-              <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                <div className="flex flex-wrap items-center gap-1.5">
-                  <span className="text-[#9BA1AE]">Samples:</span>
+              {/* Studio Image Library (Permanent IndexedDB Gallery + Built-in Samples) */}
+              <div className="rounded-xl border border-white/[0.08] bg-[#181B22] p-2.5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="text-xs font-semibold text-[#F4F5F7]">
+                    Studio Image Library{' '}
+                    <span className="font-normal text-[#9BA1AE]">
+                      ({savedStudioImages.length} saved in IndexedDB · 1-tap switch)
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => imageInputRef.current?.click()}
+                      className="inline-flex h-7 items-center gap-1 rounded-md bg-[#F97316] px-2.5 text-[11px] font-semibold text-[#0C0D10] hover:bg-[#FB923C]"
+                    >
+                      <Upload className="h-3 w-3" aria-hidden="true" />
+                      <span>Add Background</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={onOpenSubtitlesTab}
+                      className="text-xs font-semibold text-[#F97316] underline-offset-4 hover:underline whitespace-nowrap"
+                    >
+                      Subtitles Editor ({groupedPageCount} pages)
+                    </button>
+                  </div>
+                </div>
+
+                <div className="mt-2 flex items-center gap-2 overflow-x-auto pb-1">
+                  {/* User's Saved Custom Studio Images from IndexedDB */}
+                  {savedStudioImages.map((img) => {
+                    const selected = imageAsset.id === img.id;
+                    return (
+                      <div
+                        key={img.id}
+                        className={`group relative flex h-14 w-24 shrink-0 overflow-hidden rounded-lg border transition-all ${
+                          selected
+                            ? 'border-[#F97316] ring-2 ring-[#F97316]/40'
+                            : 'border-white/[0.12] hover:border-white/30'
+                        }`}
+                      >
+                        <button
+                          type="button"
+                          onClick={() => onSelectStudioImage(img)}
+                          className="relative h-full w-full text-left"
+                          title={`Switch to ${img.name}`}
+                        >
+                          <img
+                            src={img.url}
+                            alt={img.name}
+                            className="h-full w-full object-cover"
+                          />
+                          <span className="absolute inset-x-0 bottom-0 truncate bg-black/75 px-1.5 py-0.5 text-[10px] font-medium text-[#F4F5F7]">
+                            {img.name}
+                          </span>
+                        </button>
+                        <button
+                          type="button"
+                          aria-label={`Delete saved studio image ${img.name}`}
+                          onClick={() => onDeleteStudioImage(img.id)}
+                          className="absolute top-1 right-1 flex h-5 w-5 items-center justify-center rounded bg-black/80 text-[#9BA1AE] hover:text-[#FCA5A5]"
+                        >
+                          <Trash2 className="h-3 w-3" aria-hidden="true" />
+                        </button>
+                      </div>
+                    );
+                  })}
+
+                  {/* Built-in Studio Sample Backdrops */}
                   {SAMPLE_BACKDROPS.map((b) => {
                     const selected = !imageAsset.isCustom && imageAsset.id === b.id;
                     return (
@@ -259,25 +352,24 @@ export function CapCutToolDock({
                         key={b.id}
                         type="button"
                         onClick={() => onSelectSampleBackdrop(b.id)}
-                        className={`min-h-[34px] rounded-lg px-2.5 text-xs font-medium transition-colors whitespace-nowrap ${
+                        className={`relative h-14 w-24 shrink-0 overflow-hidden rounded-lg border text-left transition-all ${
                           selected
-                            ? 'bg-[#262B36] text-[#F4F5F7]'
-                            : 'bg-[#1B1E26] text-[#9BA1AE] hover:text-[#F4F5F7]'
+                            ? 'border-[#F97316] ring-2 ring-[#F97316]/40'
+                            : 'border-white/[0.12] hover:border-white/30'
                         }`}
                       >
-                        {b.name.split(' (')[0]}
+                        <img
+                          src={b.url}
+                          alt={b.name}
+                          className="h-full w-full object-cover"
+                        />
+                        <span className="absolute inset-x-0 bottom-0 truncate bg-black/75 px-1.5 py-0.5 text-[10px] font-medium text-[#F4F5F7]">
+                          {b.name.split(' (')[0]}
+                        </span>
                       </button>
                     );
                   })}
                 </div>
-
-                <button
-                  type="button"
-                  onClick={onOpenSubtitlesTab}
-                  className="min-h-[34px] text-xs font-semibold text-[#F97316] underline-offset-4 hover:underline whitespace-nowrap"
-                >
-                  Open Subtitles Editor ({groupedPageCount} pages)
-                </button>
               </div>
 
               <div className="text-xs text-[#9BA1AE]">
@@ -288,7 +380,7 @@ export function CapCutToolDock({
             </div>
           )}
 
-          {/* TAB 2: MOVE & SIZE (Arrow D-pad, Center, A-/A+, Max Text Width) */}
+          {/* TAB 2: MOVE & SIZE (Arrow D-pad, Center, A-/A+, Text Alignment, Balanced Lines, Max Text Width) */}
           {activeTool === 'position' && (
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-[auto_1fr] sm:items-center sm:gap-8">
               <div className="flex items-center justify-between gap-4 sm:justify-start">
@@ -376,7 +468,7 @@ export function CapCutToolDock({
                 </div>
               </div>
 
-              <div className="flex flex-col gap-3.5">
+              <div className="flex flex-col gap-3">
                 <div className="hidden items-center justify-between gap-4 sm:flex">
                   <div>
                     <div className="text-xs font-semibold text-[#F4F5F7]">Position Anchor</div>
@@ -392,7 +484,7 @@ export function CapCutToolDock({
                       type="button"
                       aria-label="Decrease font size"
                       onClick={() => onAdjustFontSize(-4)}
-                      className="flex h-11 min-w-[54px] items-center justify-center rounded-lg border border-white/[0.1] bg-[#1C1F26] px-3 text-sm font-semibold text-[#F4F5F7] hover:bg-[#262B35]"
+                      className="flex h-10 min-w-[50px] items-center justify-center rounded-lg border border-white/[0.1] bg-[#1C1F26] px-3 text-sm font-semibold text-[#F4F5F7] hover:bg-[#262B35]"
                     >
                       A-
                     </button>
@@ -400,10 +492,49 @@ export function CapCutToolDock({
                       type="button"
                       aria-label="Increase font size"
                       onClick={() => onAdjustFontSize(4)}
-                      className="flex h-11 min-w-[54px] items-center justify-center rounded-lg border border-white/[0.1] bg-[#1C1F26] px-3 text-sm font-semibold text-[#F4F5F7] hover:bg-[#262B35]"
+                      className="flex h-10 min-w-[50px] items-center justify-center rounded-lg border border-white/[0.1] bg-[#1C1F26] px-3 text-sm font-semibold text-[#F4F5F7] hover:bg-[#262B35]"
                     >
                       A+
                     </button>
+                  </div>
+                </div>
+
+                {/* 4 Text Alignment Buttons + Balanced Lines Toggle */}
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div
+                    className="inline-flex items-center gap-1 rounded-lg border border-white/[0.1] bg-[#1B1E26] p-1"
+                    role="group"
+                    aria-label="Text alignment"
+                  >
+                    {ALIGN_OPTIONS.map((opt) => {
+                      const Icon = opt.icon;
+                      const active = style.textAlign === opt.id;
+                      return (
+                        <button
+                          key={opt.id}
+                          type="button"
+                          aria-label={opt.label}
+                          aria-pressed={active}
+                          onClick={() => onUpdateStyle({ textAlign: opt.id })}
+                          className={`flex h-8 w-9 items-center justify-center rounded-md transition-colors ${
+                            active
+                              ? 'bg-[#F97316] text-[#0C0D10]'
+                              : 'text-[#9BA1AE] hover:bg-white/[0.06] hover:text-[#F4F5F7]'
+                          }`}
+                          title={opt.label}
+                        >
+                          <Icon className="h-4 w-4" aria-hidden="true" />
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  <div className="w-[180px]">
+                    <ToggleButton
+                      label="Balanced Lines"
+                      checked={style.balancedLines}
+                      onToggle={() => onUpdateStyle({ balancedLines: !style.balancedLines })}
+                    />
                   </div>
                 </div>
 
@@ -424,7 +555,7 @@ export function CapCutToolDock({
                     step={1}
                     value={style.maxWidthPercent}
                     onChange={(e) => onUpdateStyle({ maxWidthPercent: Number(e.target.value) })}
-                    className="mt-2 w-full"
+                    className="mt-1.5 w-full"
                   />
                 </div>
               </div>
@@ -531,44 +662,71 @@ export function CapCutToolDock({
             </div>
           )}
 
-          {/* TAB 4: STYLE (Words on Screen, Presets + Save Custom Template, Colors, Opacity + Corner Radius + Padding + Outline, Karaoke & UPPERCASE) */}
+          {/* TAB 4: STYLE (Words on Screen 1..100, Word Sync Offset, Alignment + Balanced Lines, Spacing Controls + Reset to Default, Colors, Box, Templates) */}
           {activeTool === 'style' && (
             <div className="flex flex-col gap-3">
-              {/* Row 1: Words on Screen + Quick Presets */}
+              {/* Row 1: Words on Screen (1..100) + Word Sync Offset (-300ms..+300ms) + Quick Presets */}
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="flex items-center gap-2 rounded-lg border border-white/[0.1] bg-[#1B1E26] px-2.5 py-1.5">
-                  <label
-                    htmlFor="words-on-screen-input"
-                    className="text-xs font-semibold text-[#F4F5F7] whitespace-nowrap"
-                  >
-                    Words on Screen
-                  </label>
-                  <div className="flex items-center gap-1">
-                    <button
-                      type="button"
-                      aria-label="Decrease words on screen"
-                      onClick={() => setWordsOnScreenSafe(style.wordsOnScreen - 1)}
-                      className="flex h-8 w-8 items-center justify-center rounded-md border border-white/[0.1] bg-[#12141A] text-[#F4F5F7] hover:bg-[#262B35]"
+                <div className="flex flex-wrap items-center gap-2">
+                  <div className="flex items-center gap-2 rounded-lg border border-white/[0.1] bg-[#1B1E26] px-2.5 py-1.5">
+                    <label
+                      htmlFor="words-on-screen-input"
+                      className="text-xs font-semibold text-[#F4F5F7] whitespace-nowrap"
                     >
-                      <Minus className="h-3.5 w-3.5" aria-hidden="true" />
-                    </button>
+                      Words on Screen
+                    </label>
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        aria-label="Decrease words on screen"
+                        onClick={() => setWordsOnScreenSafe(style.wordsOnScreen - 1)}
+                        className="flex h-8 w-8 items-center justify-center rounded-md border border-white/[0.1] bg-[#12141A] text-[#F4F5F7] hover:bg-[#262B35]"
+                      >
+                        <Minus className="h-3.5 w-3.5" aria-hidden="true" />
+                      </button>
+                      <input
+                        id="words-on-screen-input"
+                        type="number"
+                        min={1}
+                        max={100}
+                        value={style.wordsOnScreen}
+                        onChange={(e) => setWordsOnScreenSafe(Number(e.target.value))}
+                        className="h-8 w-14 rounded-md border border-white/[0.12] bg-[#0C0D10] text-center font-mono text-xs font-bold text-[#F4F5F7] tabular-nums focus:border-[#F97316] focus:outline-none"
+                      />
+                      <button
+                        type="button"
+                        aria-label="Increase words on screen"
+                        onClick={() => setWordsOnScreenSafe(style.wordsOnScreen + 1)}
+                        className="flex h-8 w-8 items-center justify-center rounded-md border border-white/[0.1] bg-[#12141A] text-[#F4F5F7] hover:bg-[#262B35]"
+                      >
+                        <Plus className="h-3.5 w-3.5" aria-hidden="true" />
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Word Sync Offset (-300ms to +300ms) */}
+                  <div className="flex items-center gap-2 rounded-lg border border-white/[0.1] bg-[#1B1E26] px-2.5 py-1.5">
+                    <label
+                      htmlFor="word-sync-offset-slider"
+                      className="text-xs font-medium text-[#D1D5DB] whitespace-nowrap"
+                    >
+                      Sync Offset
+                    </label>
                     <input
-                      id="words-on-screen-input"
-                      type="number"
-                      min={1}
-                      max={25}
-                      value={style.wordsOnScreen}
-                      onChange={(e) => setWordsOnScreenSafe(Number(e.target.value))}
-                      className="h-8 w-12 rounded-md border border-white/[0.12] bg-[#0C0D10] text-center font-mono text-xs font-bold text-[#F4F5F7] tabular-nums focus:border-[#F97316] focus:outline-none"
+                      id="word-sync-offset-slider"
+                      type="range"
+                      min={-300}
+                      max={300}
+                      step={10}
+                      value={style.wordSyncOffsetMs}
+                      onChange={(e) => onUpdateStyle({ wordSyncOffsetMs: Number(e.target.value) })}
+                      className="w-24 sm:w-28"
                     />
-                    <button
-                      type="button"
-                      aria-label="Increase words on screen"
-                      onClick={() => setWordsOnScreenSafe(style.wordsOnScreen + 1)}
-                      className="flex h-8 w-8 items-center justify-center rounded-md border border-white/[0.1] bg-[#12141A] text-[#F4F5F7] hover:bg-[#262B35]"
-                    >
-                      <Plus className="h-3.5 w-3.5" aria-hidden="true" />
-                    </button>
+                    <span className="w-14 text-right font-mono text-xs font-semibold text-[#F4F5F7] tabular-nums">
+                      {style.wordSyncOffsetMs > 0
+                        ? `+${style.wordSyncOffsetMs}ms`
+                        : `${style.wordSyncOffsetMs}ms`}
+                    </span>
                   </div>
                 </div>
 
@@ -586,7 +744,111 @@ export function CapCutToolDock({
                 </div>
               </div>
 
-              {/* Row 2: Colors */}
+              {/* Row 2: Text Alignment (Left, Center, Right, Justify) + Balanced Lines + Typography Spacing Sliders + Reset to Default */}
+              <div className="rounded-xl border border-white/[0.08] bg-[#181B22] p-2.5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-xs font-semibold text-[#F4F5F7]">
+                      Alignment &amp; Spacing
+                    </span>
+                    <div
+                      className="inline-flex items-center gap-1 rounded-lg border border-white/[0.1] bg-[#0C0D10] p-0.5"
+                      role="group"
+                      aria-label="Text alignment"
+                    >
+                      {ALIGN_OPTIONS.map((opt) => {
+                        const Icon = opt.icon;
+                        const active = style.textAlign === opt.id;
+                        return (
+                          <button
+                            key={opt.id}
+                            type="button"
+                            aria-label={opt.label}
+                            aria-pressed={active}
+                            onClick={() => onUpdateStyle({ textAlign: opt.id })}
+                            className={`flex h-7 w-8 items-center justify-center rounded transition-colors ${
+                              active
+                                ? 'bg-[#F97316] text-[#0C0D10]'
+                                : 'text-[#9BA1AE] hover:bg-white/[0.06] hover:text-[#F4F5F7]'
+                            }`}
+                            title={opt.label}
+                          >
+                            <Icon className="h-3.5 w-3.5" aria-hidden="true" />
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={style.balancedLines}
+                      onClick={() => onUpdateStyle({ balancedLines: !style.balancedLines })}
+                      className={`h-8 rounded-lg border px-2.5 text-xs font-semibold transition-colors ${
+                        style.balancedLines
+                          ? 'border-[#F97316]/60 bg-[#F97316]/15 text-[#F4F5F7]'
+                          : 'border-white/[0.1] bg-[#12141A] text-[#9BA1AE] hover:text-[#F4F5F7]'
+                      }`}
+                    >
+                      Balanced Lines: {style.balancedLines ? 'ON' : 'OFF'}
+                    </button>
+                  </div>
+
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={onResetSpacing}
+                      className="inline-flex h-8 items-center gap-1 rounded-lg border border-white/[0.12] bg-[#12141A] px-2.5 text-xs font-semibold text-[#D1D5DB] hover:border-[#F97316]/50 hover:text-[#F4F5F7]"
+                    >
+                      <RotateCcw className="h-3 w-3" aria-hidden="true" />
+                      <span>Reset to Default</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={onResetAllStyle}
+                      className="inline-flex h-8 items-center gap-1 rounded-lg border border-white/[0.08] bg-[#12141A] px-2.5 text-xs font-medium text-[#9BA1AE] hover:text-[#FCA5A5]"
+                    >
+                      <span>Reset All Style</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* 3 Typography Spacing Sliders: Line Gap (0.9x..2.2x), Word Gap (0..32px), Letter Gap (-2..16px) */}
+                <div className="mt-2.5 grid grid-cols-1 gap-3 sm:grid-cols-3">
+                  <SliderField
+                    id="line-gap-slider"
+                    label="Line Gap / Height"
+                    valueText={`${style.lineSpacingMultiplier.toFixed(2)}x`}
+                    min={90}
+                    max={220}
+                    step={2}
+                    value={Math.round(style.lineSpacingMultiplier * 100)}
+                    onChange={(v) => onUpdateStyle({ lineSpacingMultiplier: Number((v / 100).toFixed(2)) })}
+                  />
+                  <SliderField
+                    id="word-gap-slider"
+                    label="Word Gap / Spacing"
+                    valueText={`${style.wordSpacingPx} px`}
+                    min={0}
+                    max={32}
+                    step={1}
+                    value={style.wordSpacingPx}
+                    onChange={(v) => onUpdateStyle({ wordSpacingPx: v })}
+                  />
+                  <SliderField
+                    id="letter-gap-slider"
+                    label="Letter Gap / Spacing"
+                    valueText={`${style.letterSpacingPx} px`}
+                    min={-2}
+                    max={16}
+                    step={0.5}
+                    value={style.letterSpacingPx}
+                    onChange={(v) => onUpdateStyle({ letterSpacingPx: v })}
+                  />
+                </div>
+              </div>
+
+              {/* Row 3: Colors */}
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
                 <ColorPickerRow
                   label="Text"
@@ -608,7 +870,7 @@ export function CapCutToolDock({
                 />
               </div>
 
-              {/* Row 3: Box Opacity + Corner Radius (0-50px) + Box Padding + Outline */}
+              {/* Row 4: Box Opacity + Corner Radius (0-50px) + Box Padding + Outline */}
               <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
                 <SliderField
                   id="box-opacity-slider"
@@ -652,7 +914,7 @@ export function CapCutToolDock({
                 />
               </div>
 
-              {/* Row 4: Karaoke, UPPERCASE & Saved Custom Templates ("Save My Preset") */}
+              {/* Row 5: Karaoke, UPPERCASE & Saved Custom Templates ("Save My Preset") */}
               <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-[1fr_1fr_1.6fr] lg:items-center">
                 <ToggleButton
                   label="Word Karaoke"
@@ -664,7 +926,7 @@ export function CapCutToolDock({
                   checked={style.uppercase}
                   onToggle={() => onUpdateStyle({ uppercase: !style.uppercase })}
                 />
-                <form onSubmit={handleSaveTemplateSubmit} className="flex items-center gap-1.5">
+                <form onSubmit={handleSaveTemplateSubmit} className="relative flex items-center gap-1.5">
                   <label htmlFor="custom-template-name" className="sr-only">
                     Custom template name
                   </label>
@@ -716,10 +978,28 @@ export function CapCutToolDock({
             </div>
           )}
 
-          {/* TAB 5: ANIMATE (10 Smooth Caption Animations + Speed/Intensity Slider) */}
+          {/* TAB 5: ANIMATE (20 Smooth Caption & Word Animations + Speed/Intensity Slider) */}
           {activeTool === 'animate' && (
             <div className="flex flex-col gap-3">
-              <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="text-xs font-semibold text-[#F4F5F7]">
+                  20 Smooth Caption &amp; Word Animations
+                </span>
+                <div className="w-64">
+                  <SliderField
+                    id="anim-intensity-slider"
+                    label="Animation Speed & Intensity"
+                    valueText={`${style.animationIntensity.toFixed(2)}x`}
+                    min={40}
+                    max={200}
+                    step={5}
+                    value={Math.round(style.animationIntensity * 100)}
+                    onChange={(v) => onUpdateStyle({ animationIntensity: v / 100 })}
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-4 lg:grid-cols-5">
                 {CAPTION_ANIMATIONS.map((anim) => {
                   const active = style.animation === anim.id;
                   return (
@@ -728,7 +1008,7 @@ export function CapCutToolDock({
                       type="button"
                       aria-pressed={active}
                       onClick={() => onUpdateStyle({ animation: anim.id })}
-                      className={`flex min-h-[52px] flex-col items-start justify-center rounded-xl border px-2.5 py-1.5 text-left transition-colors ${
+                      className={`flex min-h-[48px] flex-col items-start justify-center rounded-xl border px-2.5 py-1.5 text-left transition-colors ${
                         active
                           ? 'border-[#F97316] bg-[#F97316]/12 text-[#F4F5F7]'
                           : 'border-white/[0.08] bg-[#1B1E26] text-[#D1D5DB] hover:border-white/25'
@@ -739,19 +1019,6 @@ export function CapCutToolDock({
                     </button>
                   );
                 })}
-              </div>
-
-              <div className="max-w-md">
-                <SliderField
-                  id="anim-intensity-slider"
-                  label="Animation Speed & Intensity"
-                  valueText={`${style.animationIntensity.toFixed(2)}x`}
-                  min={40}
-                  max={200}
-                  step={5}
-                  value={Math.round(style.animationIntensity * 100)}
-                  onChange={(v) => onUpdateStyle({ animationIntensity: v / 100 })}
-                />
               </div>
             </div>
           )}
@@ -921,7 +1188,7 @@ export function CapCutToolDock({
             </div>
           )}
 
-          {/* TAB 7: BRAND & BG (Fill/Fit, Vignette/Dim, Slow Zoom, 24/30fps CFR, Channel Logo Watermark, Video Progress Bar) */}
+          {/* TAB 7: BRAND & BG (Fill/Fit, Vignette/Dim, Slow Zoom, 15/24/30fps CFR, Channel Logo Watermark, Video Progress Bar) */}
           {activeTool === 'brand' && (
             <div className="flex flex-col gap-3.5">
               {/* Background Scaling + Aspect + CFR FPS */}
@@ -966,7 +1233,7 @@ export function CapCutToolDock({
                 </div>
 
                 <div className="inline-flex items-center rounded-lg border border-white/[0.08] bg-[#0C0D10] p-0.5">
-                  {([24, 30] as const).map((fpsOption) => (
+                  {([15, 24, 30] as const).map((fpsOption) => (
                     <button
                       key={fpsOption}
                       type="button"

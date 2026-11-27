@@ -1,11 +1,22 @@
-import type { AspectRatioId, CaptionStyle, ExportBitrateMbps, SavedTemplate } from './types';
+import type {
+  AspectRatioId,
+  CaptionStyle,
+  ExportBitrateMbps,
+  ResolutionId,
+  SavedTemplate,
+} from './types';
 
 const DB_NAME = 'CaptionStudioFontsDB';
 const DB_VERSION = 2;
 const FONT_STORE = 'fonts';
 const ASSET_STORE = 'assets';
 const LOGO_ASSET_KEY = 'channel_logo_watermark';
-const SETTINGS_KEY = 'captionstudio_persisted_settings_v3';
+
+const IMAGES_DB_NAME = 'CaptionStudioImagesDB';
+const IMAGES_DB_VERSION = 1;
+const IMAGES_STORE = 'studio_images';
+
+const SETTINGS_KEY = 'captionstudio_persisted_settings_v4';
 const TEMPLATES_KEY = 'captionstudio_saved_templates_v1';
 
 export interface StoredCustomFont {
@@ -25,10 +36,20 @@ export interface StoredLogoAsset {
   addedAt: number;
 }
 
+export interface StoredStudioImage {
+  id: string;
+  name: string;
+  mimeType: string;
+  buffer: ArrayBuffer;
+  addedAt: number;
+}
+
 export interface PersistedStudioSettings {
   style: Partial<CaptionStyle>;
   aspectId?: AspectRatioId;
+  resolutionId?: ResolutionId;
   bitrateMbps?: ExportBitrateMbps;
+  selectedImageId?: string;
 }
 
 function openStudioDatabase(): Promise<IDBDatabase> {
@@ -51,6 +72,26 @@ function openStudioDatabase(): Promise<IDBDatabase> {
     req.onerror = () => reject(req.error ?? new Error('Failed to open CaptionStudioFontsDB'));
   });
 }
+
+function openImagesDatabase(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    if (typeof indexedDB === 'undefined') {
+      reject(new Error('IndexedDB is unavailable in this environment'));
+      return;
+    }
+    const req = indexedDB.open(IMAGES_DB_NAME, IMAGES_DB_VERSION);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(IMAGES_STORE)) {
+        db.createObjectStore(IMAGES_STORE, { keyPath: 'id' });
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error ?? new Error('Failed to open CaptionStudioImagesDB'));
+  });
+}
+
+// --- Permanent Custom Fonts in CaptionStudioFontsDB ---
 
 export async function loadSavedFontsFromDb(): Promise<StoredCustomFont[]> {
   try {
@@ -164,12 +205,65 @@ export async function deleteLogoFromDb(): Promise<void> {
   });
 }
 
+// --- Permanent Studio Image Library in CaptionStudioImagesDB ---
+
+export async function loadSavedStudioImagesFromDb(): Promise<StoredStudioImage[]> {
+  try {
+    const db = await openImagesDatabase();
+    return await new Promise<StoredStudioImage[]>((resolve, reject) => {
+      const tx = db.transaction(IMAGES_STORE, 'readonly');
+      const req = tx.objectStore(IMAGES_STORE).getAll();
+      req.onsuccess = () => {
+        const list = (req.result as StoredStudioImage[]) ?? [];
+        resolve(list.sort((a, b) => b.addedAt - a.addedAt));
+      };
+      req.onerror = () => reject(req.error);
+      tx.oncomplete = () => db.close();
+    });
+  } catch {
+    return [];
+  }
+}
+
+export async function saveStudioImageToDb(img: StoredStudioImage): Promise<void> {
+  const db = await openImagesDatabase();
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(IMAGES_STORE, 'readwrite');
+    tx.objectStore(IMAGES_STORE).put(img);
+    tx.oncomplete = () => {
+      db.close();
+      resolve();
+    };
+    tx.onerror = () => {
+      db.close();
+      reject(tx.error ?? new Error('Failed to save studio image to CaptionStudioImagesDB'));
+    };
+  });
+}
+
+export async function deleteStudioImageFromDb(id: string): Promise<void> {
+  const db = await openImagesDatabase();
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(IMAGES_STORE, 'readwrite');
+    tx.objectStore(IMAGES_STORE).delete(id);
+    tx.oncomplete = () => {
+      db.close();
+      resolve();
+    };
+    tx.onerror = () => {
+      db.close();
+      reject(tx.error ?? new Error('Failed to delete studio image from CaptionStudioImagesDB'));
+    };
+  });
+}
+
 // --- Persisted Studio Settings & Saved Custom Templates in localStorage ---
 
 export function loadPersistedSettings(): PersistedStudioSettings | null {
   try {
     const raw =
       localStorage.getItem(SETTINGS_KEY) ??
+      localStorage.getItem('captionstudio_persisted_settings_v3') ??
       localStorage.getItem('captionstudio_persisted_settings_v2');
     if (!raw) return null;
     const parsed = JSON.parse(raw) as PersistedStudioSettings;
